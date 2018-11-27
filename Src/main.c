@@ -57,7 +57,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 SPI_HandleTypeDef hspi1;
+SPI_HandleTypeDef hspi2;
 DMA_HandleTypeDef hdma_spi1_tx;
+DMA_HandleTypeDef hdma_spi2_tx;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -69,10 +71,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_SPI2_Init(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-typedef enum  {
+typedef enum {
     APP_SATTE_INIT,
     APP_SATTE_INIT_D,
     APP_SATTE_INIT_A,
@@ -85,13 +88,16 @@ typedef enum  {
 CIRC_BUF_DEF(cdc_circ_buf, 2048);
 volatile static uint8_t needUpdate = 0;
 #define LED_COUNT 13
-uint8_t ledBuf[LED_COUNT*3] = {0};
+uint8_t ledSpiBuf[LED_COUNT * 3] = {0};
+uint8_t ledPWMBuf[(LED_COUNT+50) * 3 * 8] = {0};
+uint8_t * ledPWMDataPtr = 0;
 uint8_t hi, lo, chk, i;
 AppState_t appState;
 uint16_t ledLen;
 uint16_t ledBufIndex = 0;
 uint32_t last_data_tick;
 
+void fillLedPwmBuff(int ledx, uint8_t value);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
@@ -130,22 +136,45 @@ int main(void)
   MX_DMA_Init();
   MX_USB_DEVICE_Init();
   MX_SPI1_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
-  HAL_Delay(1000);
-  for(i=0; i<LED_COUNT; i++){
-    ledBuf[i*3] = 0xff;
-    ledBuf[i*3+1] = 0x00;
-    ledBuf[i*3+2] = 0x00;
+  ledPWMDataPtr = &ledPWMBuf[50];
+  for(i=0; i<50; i++){
+    ledPWMBuf[i] = 0x00;
   }
-  HAL_SPI_Transmit(&hspi1, &ledBuf[0], LED_COUNT*3, HAL_MAX_DELAY);
+
   HAL_Delay(1000);
-  for(i=0; i<LED_COUNT; i++){
-    ledBuf[i*3] = 0x00;
-    ledBuf[i*3+1] = 0x00;
-    ledBuf[i*3+2] = 0x00;
+  for (i = 0; i < LED_COUNT; i++) {
+    ledSpiBuf[i * 3] = 0x01;
+    ledSpiBuf[i * 3 + 1] = 0x00;
+    ledSpiBuf[i * 3 + 2] = 0x00;
+
+    fillLedPwmBuff(i * 3, 0x01);
+    fillLedPwmBuff(i * 3 + 1, 0x00);
+    fillLedPwmBuff(i * 3 + 2, 0x00);
   }
-  HAL_SPI_Transmit(&hspi1, &ledBuf[0], LED_COUNT*3, HAL_MAX_DELAY);
+  fillLedPwmBuff(i * 3, 0x00);
+  fillLedPwmBuff(i * 3+1, 0x00);
+
+//  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)(LED_COUNT));
+//  HAL_TIM_OC_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)(LED_COUNT * 3 * 8));
+  HAL_SPI_Transmit_DMA(&hspi2, &ledPWMBuf[0], sizeof(ledPWMBuf));
+  HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], LED_COUNT * 3, HAL_MAX_DELAY);
+  HAL_Delay(1000);
+  for (i = 0; i < LED_COUNT; i++) {
+    ledSpiBuf[i * 3] = 0x00;
+    ledSpiBuf[i * 3 + 1] = 0x00;
+    ledSpiBuf[i * 3 + 2] = 0x00;
+
+    fillLedPwmBuff(i * 3, 0x00);
+    fillLedPwmBuff(i * 3 + 1, 0x00);
+    fillLedPwmBuff(i * 3 + 2, 0x00);
+  }
+//  HAL_TIM_PWM_Stop_DMA(&htim2, TIM_CHANNEL_1);
+//  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)(LED_COUNT));
+  HAL_SPI_Transmit_DMA(&hspi2, &ledPWMBuf[0], sizeof(ledPWMBuf));
+//  HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
+  HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], LED_COUNT * 3, HAL_MAX_DELAY);
   HAL_Delay(1000);
   uint8_t buf[12];
 
@@ -165,14 +194,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1) {
 
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
     cur_tick = HAL_GetTick();
-    if(cur_tick - last_data_tick > 15000) {
+    if (cur_tick - last_data_tick > 15000) {
       buf[0] = 'A';
       buf[1] = 'd';
       buf[2] = 'a';
@@ -182,31 +210,29 @@ int main(void)
       last_data_tick = HAL_GetTick();
     }
     tmp_result = circ_buf_pop(&cdc_circ_buf, &tmp);
-    if(-1 == tmp_result){
+    if (-1 == tmp_result) {
       continue;
     }
     last_data_tick = cur_tick;
-    switch(appState){
+    switch (appState) {
       case APP_SATTE_INIT:
-        if(tmp == 'A') {
+        if (tmp == 'A') {
           appState = APP_SATTE_INIT_D;
         }
         break;
       case APP_SATTE_INIT_D:
-        if(tmp == 'd') {
+        if (tmp == 'd') {
           appState = APP_SATTE_INIT_A;
 
-        }
-        else {
+        } else {
           appState = APP_SATTE_INIT;
         }
         break;
       case APP_SATTE_INIT_A:
-        if(tmp == 'a') {
+        if (tmp == 'a') {
           appState = APP_SATTE_HI;
 
-        }
-        else {
+        } else {
           appState = APP_SATTE_INIT;
         }
         break;
@@ -221,22 +247,25 @@ int main(void)
       case APP_SATTE_CHK:
         chk = tmp;
 
-        if(chk == (hi ^ lo ^ 0x55)) {
-          ledLen = (uint16_t)(3L * (256L * (long)hi + (long)lo));
+        if (chk == (hi ^ lo ^ 0x55)) {
+          ledLen = (uint16_t) (3L * (256L * (long) hi + (long) lo));
           ledBufIndex = 0;
           appState = APP_SATTE_DATA;
           HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
-        }
-        else{
+        } else {
           appState = APP_SATTE_INIT;
 
         }
         break;
       case APP_SATTE_DATA:
-        ledBuf[ledBufIndex] = tmp;
-        ledBufIndex ++;
-        if(ledBufIndex == ledLen){
-          HAL_SPI_Transmit(&hspi1, &ledBuf[0], ledLen, HAL_MAX_DELAY);
+        ledSpiBuf[ledBufIndex] = tmp;
+        fillLedPwmBuff(ledBufIndex, tmp);
+        ledBufIndex++;
+        if (ledBufIndex == ledLen) {
+//          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)(ledLen*8));
+          HAL_SPI_Transmit_DMA(&hspi2, &ledPWMBuf[0], (uint16_t)((ledLen+50*3)*8));
+          HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], ledLen, HAL_MAX_DELAY);
+//          HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], ledLen);
           appState = APP_SATTE_INIT;
         }
         break;
@@ -344,12 +373,36 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
   if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+}
+
+/* SPI2 init function */
+static void MX_SPI2_Init(void)
+{
+
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_1LINE;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
@@ -368,6 +421,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -387,9 +443,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : Led_Pin */
   GPIO_InitStruct.Pin = Led_Pin;
@@ -400,11 +457,28 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void onSerial(uint8_t* Buf, uint32_t Len){
-  for(uint32_t i=0; i<Len; i++){
+void onSerial(uint8_t *Buf, uint32_t Len) {
+  for (uint32_t i = 0; i < Len; i++) {
     circ_buf_push(&cdc_circ_buf, Buf[i]);
   }
 }
+
+void fillLedPwmBuff(int ledx, uint8_t value) {
+  int i;
+  if (ledx < LED_COUNT*3) {
+    if(ledx % 3 == 2){
+      ledx = ledx - 2;
+    }
+    else{
+      ledx = ledx + 1;
+    }
+    for (i = 0; i < 8; i++) {
+      ledPWMDataPtr[ledx*8 + i] = (value & (1 << (7 - i))) ? (uint8_t)0xF8 : (uint8_t)0xE0;
+    }
+  }
+}
+
+
 /* USER CODE END 4 */
 
 /**
@@ -417,8 +491,7 @@ void _Error_Handler(char *file, int line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  while(1)
-  {
+  while (1) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
