@@ -75,7 +75,6 @@ static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
                                     
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim);
                                 
 
 /* USER CODE BEGIN PFP */
@@ -90,20 +89,21 @@ typedef enum {
     APP_SATTE_DATA
 } AppState_t;
 
-CIRC_BUF_DEF(cdc_circ_buf, 2048);
+CIRC_BUF_DEF(cdc_circ_buf, 1024);
 volatile static uint8_t needUpdate = 0;
-#define LED_COUNT 13
-uint8_t ledSpiBuf[LED_COUNT * 3] = {0};
+#define LED_COUNT 200
+static uint8_t ledSpiBuf[LED_COUNT * 3] = {0};
 #define LED_PWM_RESET_LEN 50
 #define PWM_BUFF_LEN  ((LED_COUNT+LED_PWM_RESET_LEN) * 3 * 8)
-uint32_t ledPWMBuf[PWM_BUFF_LEN] = {0};
-uint32_t * ledPWMDataPtr;
-uint8_t hi, lo, chk, i;
-AppState_t appState;
-uint16_t ledLen;
-uint16_t ledBufIndex = 0;
-uint32_t last_data_tick;
+static uint8_t ledPWMBuf[PWM_BUFF_LEN] = {0};
+static uint8_t * ledPWMDataPtr;
+static uint8_t hi, lo, chk, i;
+static AppState_t appState;
+static uint16_t ledLen;
+static uint16_t ledBufIndex = 0;
+static uint32_t last_data_tick;
 
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim);
 void fillLedPwmBuff(int ledx, uint8_t value);
 /* USER CODE END PFP */
 
@@ -146,7 +146,7 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   ledPWMDataPtr = &ledPWMBuf[LED_PWM_RESET_LEN];
-  HAL_Delay(1000);
+  HAL_Delay(100);
   for (i = 0; i < LED_COUNT; i++) {
     ledSpiBuf[i * 3] = 0x01;
     ledSpiBuf[i * 3 + 1] = 0x00;
@@ -156,7 +156,7 @@ int main(void)
     fillLedPwmBuff(i * 3 + 1, 0x00);
     fillLedPwmBuff(i * 3 + 2, 0x00);
   }
-  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], PWM_BUFF_LEN);
+  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
   HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
   HAL_Delay(1000);
   for (i = 0; i < LED_COUNT; i++) {
@@ -168,9 +168,9 @@ int main(void)
     fillLedPwmBuff(i * 3 + 1, 0x00);
     fillLedPwmBuff(i * 3 + 2, 0x00);
   }
-  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], PWM_BUFF_LEN);
+  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
   HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
-  HAL_Delay(1000);
+  HAL_Delay(10);
   uint8_t buf[12];
 
   buf[0] = 'A';
@@ -257,7 +257,7 @@ int main(void)
         fillLedPwmBuff(ledBufIndex, tmp);
         ledBufIndex++;
         if (ledBufIndex == ledLen) {
-          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)((LED_PWM_RESET_LEN*3+ledLen)*8));
+          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], (uint16_t)((LED_PWM_RESET_LEN*3+ledLen)*8));
           HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], ledLen);
           appState = APP_SATTE_INIT;
         }
@@ -451,7 +451,7 @@ void fillLedPwmBuff(int ledx, uint8_t value) {
       ledx = ledx + 1;
     }
     for (i = 0; i < 8; i++) {
-      ledPWMDataPtr[ledx*8 + i] = (value & (1 << (7 - i))) ? (2*TIM2->ARR/3) : (TIM2->ARR/3);
+      ledPWMDataPtr[ledx*8 + i] = (value & (1 << (7 - i))) ? (uint8_t)(2*TIM2->ARR/3) : (uint8_t)(TIM2->ARR/3);
     }
   }
 }
