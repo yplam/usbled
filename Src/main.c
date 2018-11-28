@@ -59,6 +59,9 @@
 SPI_HandleTypeDef hspi1;
 DMA_HandleTypeDef hdma_spi1_tx;
 
+TIM_HandleTypeDef htim2;
+DMA_HandleTypeDef hdma_tim2_ch1;
+
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
@@ -69,6 +72,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM2_Init(void);
+                                    
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim);
+                                
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -86,7 +94,10 @@ CIRC_BUF_DEF(cdc_circ_buf, 2048);
 volatile static uint8_t needUpdate = 0;
 #define LED_COUNT 13
 uint8_t ledSpiBuf[LED_COUNT * 3] = {0};
-uint32_t ledPWMBuf[LED_COUNT * 3 * 8] = {0};
+#define LED_PWM_RESET_LEN 50
+#define PWM_BUFF_LEN  ((LED_COUNT+LED_PWM_RESET_LEN) * 3 * 8)
+uint32_t ledPWMBuf[PWM_BUFF_LEN] = {0};
+uint32_t * ledPWMDataPtr;
 uint8_t hi, lo, chk, i;
 AppState_t appState;
 uint16_t ledLen;
@@ -132,24 +143,33 @@ int main(void)
   MX_DMA_Init();
   MX_USB_DEVICE_Init();
   MX_SPI1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-
+  ledPWMDataPtr = &ledPWMBuf[LED_PWM_RESET_LEN];
   HAL_Delay(1000);
   for (i = 0; i < LED_COUNT; i++) {
     ledSpiBuf[i * 3] = 0x01;
     ledSpiBuf[i * 3 + 1] = 0x00;
     ledSpiBuf[i * 3 + 2] = 0x00;
+
+    fillLedPwmBuff(i * 3, 0x01);
+    fillLedPwmBuff(i * 3 + 1, 0x00);
+    fillLedPwmBuff(i * 3 + 2, 0x00);
   }
+  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], PWM_BUFF_LEN);
   HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
-//  HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], LED_COUNT * 3, HAL_MAX_DELAY);
   HAL_Delay(1000);
   for (i = 0; i < LED_COUNT; i++) {
     ledSpiBuf[i * 3] = 0x00;
     ledSpiBuf[i * 3 + 1] = 0x00;
     ledSpiBuf[i * 3 + 2] = 0x00;
+
+    fillLedPwmBuff(i * 3, 0x00);
+    fillLedPwmBuff(i * 3 + 1, 0x00);
+    fillLedPwmBuff(i * 3 + 2, 0x00);
   }
+  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], PWM_BUFF_LEN);
   HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
-//  HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], LED_COUNT * 3, HAL_MAX_DELAY);
   HAL_Delay(1000);
   uint8_t buf[12];
 
@@ -237,40 +257,12 @@ int main(void)
         fillLedPwmBuff(ledBufIndex, tmp);
         ledBufIndex++;
         if (ledBufIndex == ledLen) {
-//          HAL_SPI_Transmit(&hspi1, &ledSpiBuf[0], ledLen, HAL_MAX_DELAY);
+          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, &ledPWMBuf[0], (uint16_t)((LED_PWM_RESET_LEN*3+ledLen)*8));
           HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], ledLen);
           appState = APP_SATTE_INIT;
         }
         break;
     }
-//    HAL_GPIO_TogglePin(Led_GPIO_Port, Led_Pin);
-
-//    uint16_t i=0;
-//    for(i=0; i< 10; i++){
-//      if(-1 == circ_buf_pop(&cdc_circ_buf, &buf[i])){
-//        break;
-//      }
-//      if(buf[i] == '\n'){
-//        i++;
-//        buf[i] = '\r';
-//      }
-//      else if(buf[i] == '\r'){
-//        i++;
-//        buf[i] = '\n';
-//      }
-//    }
-//    if(i > 0){
-//      CDC_Transmit_FS(buf, i);
-//    }
-//    for(i=0; i<39; i++){
-//      ledBuf[i] = (uint8_t)i;
-//    }
-//    if(needUpdate){
-//      needUpdate = 0;
-//      HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
-//      HAL_SPI_Transmit(&hspi1, &ledBuf[0], LED_COUNT*3, HAL_MAX_DELAY);
-//      HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
-//    }
   }
   /* USER CODE END 3 */
 
@@ -358,6 +350,44 @@ static void MX_SPI1_Init(void)
 
 }
 
+/* TIM2 init function */
+static void MX_TIM2_Init(void)
+{
+
+  TIM_MasterConfigTypeDef sMasterConfig;
+  TIM_OC_InitTypeDef sConfigOC;
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 59;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 19;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    _Error_Handler(__FILE__, __LINE__);
+  }
+
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
 /** 
   * Enable DMA controller clock
   */
@@ -370,6 +400,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -418,8 +451,16 @@ void fillLedPwmBuff(int ledx, uint8_t value) {
       ledx = ledx + 1;
     }
     for (i = 0; i < 8; i++) {
-      ledPWMBuf[ledx*8 + i] = (value & (1 << (7 - i))) ? (uint8_t)0xF8 : (uint8_t)0xE0;
+      ledPWMDataPtr[ledx*8 + i] = (value & (1 << (7 - i))) ? (2*TIM2->ARR/3) : (TIM2->ARR/3);
     }
+  }
+}
+
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
+  if(htim->Instance==TIM2)
+  {
+    HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
+    HAL_TIM_PWM_Stop_DMA(&htim2, TIM_CHANNEL_1);
   }
 }
 
