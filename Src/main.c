@@ -146,19 +146,19 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   ledPWMDataPtr = &ledPWMBuf[LED_PWM_RESET_LEN];
-  HAL_Delay(200);
+  HAL_Delay(100);
   for (i = 0; i < LED_COUNT; i++) {
     ledSpiBuf[i * 3] = 0x00;
-    ledSpiBuf[i * 3 + 1] = 0x01;
-    ledSpiBuf[i * 3 + 2] = 0x00;
+    ledSpiBuf[i * 3 + 1] = 0x00;
+    ledSpiBuf[i * 3 + 2] = 0x01;
 
     fillLedPwmBuff(i * 3, 0x00);
-    fillLedPwmBuff(i * 3 + 1, 0x01);
-    fillLedPwmBuff(i * 3 + 2, 0x00);
+    fillLedPwmBuff(i * 3 + 1, 0x00);
+    fillLedPwmBuff(i * 3 + 2, 0x01);
   }
   HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
   HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
-  HAL_Delay(1000);
+  HAL_Delay(500);
   for (i = 0; i < LED_COUNT; i++) {
     ledSpiBuf[i * 3] = 0x00;
     ledSpiBuf[i * 3 + 1] = 0x00;
