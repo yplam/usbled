@@ -105,19 +105,25 @@ typedef enum {
 
 CIRC_BUF_DEF(cdc_circ_buf, 1024);
 volatile static uint8_t needUpdate = 0;
-#define LED_COUNT 200
-static uint8_t ledSpiBuf[LED_COUNT * 3] = {0};
-#define LED_PWM_RESET_LEN 50
-#define PWM_BUFF_LEN  ((LED_COUNT+LED_PWM_RESET_LEN) * 3 * 8)
-static uint8_t ledPWMBuf[PWM_BUFF_LEN] = {0};
-static uint8_t * ledPWMDataPtr;
-static uint8_t hi, lo, chk, i;
+#define LED_COUNT 1000
+uint8_t ledBuf[LED_COUNT * 3] = {0};
+#define LED_PWM_HALF_LEN 50
+#define LED_PWM_TOTAL_LEN (LED_PWM_HALF_LEN*2)
+#define PWM_BUFF_LEN  (LED_PWM_TOTAL_LEN * 3 * 8)
+uint8_t ledPWMBuf[PWM_BUFF_LEN] = {0};
+
+uint16_t ledPWMBufIndex;   // 下次DMA数据写入到 ledPWMBuf 的 Index
+uint16_t ledPWMSendIndex;  //  ledBuf中下一个写入到 ledPWMBuf 进行数据传输的 Index
+static uint8_t hi, lo, chk;
 static AppState_t appState;
-static uint16_t ledLen;
+static uint16_t ledLen = LED_COUNT*3;
 static uint16_t ledBufIndex = 0;
 static uint32_t last_data_tick;
 
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim);
+void APP_PWM_Start_DMA(void);
+void APP_TIM_DMADelayPulseCplt(DMA_HandleTypeDef *hdma);
+void APP_PWM_Fill_Half(void);
 void fillLedPwmBuff(int ledx, uint8_t value);
 /* USER CODE END PFP */
 
@@ -159,32 +165,30 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  ledPWMDataPtr = &ledPWMBuf[LED_PWM_RESET_LEN];
+
   HAL_Delay(100);
+  uint16_t i;
   for (i = 0; i < LED_COUNT; i++) {
-    ledSpiBuf[i * 3] = 0x00;
-    ledSpiBuf[i * 3 + 1] = 0x00;
-    ledSpiBuf[i * 3 + 2] = 0x01;
-
-    fillLedPwmBuff(i * 3, 0x00);
-    fillLedPwmBuff(i * 3 + 1, 0x00);
-    fillLedPwmBuff(i * 3 + 2, 0x01);
+    ledBuf[i * 3] = 0x00;
+    ledBuf[i * 3 + 1] = 0x00;
+    ledBuf[i * 3 + 2] = 0x01;
   }
-  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
-  HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
+
+//  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
+  APP_PWM_Start_DMA();
+  HAL_SPI_Transmit_DMA(&hspi1, &ledBuf[0], LED_COUNT * 3);
   HAL_Delay(500);
-  for (i = 0; i < LED_COUNT; i++) {
-    ledSpiBuf[i * 3] = 0x00;
-    ledSpiBuf[i * 3 + 1] = 0x00;
-    ledSpiBuf[i * 3 + 2] = 0x00;
 
-    fillLedPwmBuff(i * 3, 0x00);
-    fillLedPwmBuff(i * 3 + 1, 0x00);
-    fillLedPwmBuff(i * 3 + 2, 0x00);
+  for (i = 0; i < LED_COUNT; i++) {
+    ledBuf[i * 3] = 0x00;
+    ledBuf[i * 3 + 1] = 0x00;
+    ledBuf[i * 3 + 2] = 0x00;
   }
-  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
-  HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], LED_COUNT * 3);
+//  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], PWM_BUFF_LEN);
+  APP_PWM_Start_DMA();
+  HAL_SPI_Transmit_DMA(&hspi1, &ledBuf[0], LED_COUNT * 3);
   HAL_Delay(10);
+
   uint8_t buf[12];
 
   buf[0] = 'A';
@@ -268,12 +272,12 @@ int main(void)
         }
         break;
       case APP_SATTE_DATA:
-        ledSpiBuf[ledBufIndex] = tmp;
-        fillLedPwmBuff(ledBufIndex, tmp);
+        ledBuf[ledBufIndex] = tmp;
         ledBufIndex++;
         if (ledBufIndex == ledLen) {
-          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], (uint16_t)((LED_PWM_RESET_LEN*3+ledLen)*8));
-          HAL_SPI_Transmit_DMA(&hspi1, &ledSpiBuf[0], ledLen);
+//          HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], (uint16_t)((LED_PWM_RESET_LEN*3+ledLen)*8));
+          APP_PWM_Start_DMA();
+          HAL_SPI_Transmit_DMA(&hspi1, &ledBuf[0], ledLen);
           appState = APP_SATTE_INIT;
         }
         break;
@@ -407,7 +411,7 @@ static void MX_TIM2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM2_Init 2 */
-
+  htim2.hdma[TIM_DMA_ID_CC1]->XferHalfCpltCallback = APP_TIM_DMADelayPulseCplt;
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
 
@@ -464,26 +468,75 @@ void onSerial(uint8_t *Buf, uint32_t Len) {
   }
 }
 
-void fillLedPwmBuff(int ledx, uint8_t value) {
-  int i;
-  if (ledx < LED_COUNT*3) {
-    if(ledx % 3 == 2){
-      ledx = ledx - 2;
-    }
-    else{
-      ledx = ledx + 1;
-    }
-    for (i = 0; i < 8; i++) {
-      ledPWMDataPtr[ledx*8 + i] = (value & (1 << (7 - i))) ? (uint8_t)(2*TIM2->ARR/3) : (uint8_t)(TIM2->ARR/3);
-    }
+void fillLedPwmReset(int ledx) {
+  for (uint16_t i = 0; i < 8; i++) {
+    ledPWMBuf[ledx*8 + i] = 0x00;
   }
+}
+
+void fillLedPwmBuff(int ledx, uint8_t value) {
+  uint16_t i;
+  if(ledx % 3 == 2){
+    ledx = ledx - 2;
+  }
+  else{
+    ledx = ledx + 1;
+  }
+  for (i = 0; i < 8; i++) {
+    ledPWMBuf[ledx*8 + i] = (value & (1 << (7 - i))) ? (uint8_t)(2*TIM2->ARR/3) : (uint8_t)(TIM2->ARR/3);
+  }
+}
+
+void APP_PWM_Start_DMA(void) {
+//  ledPWMBufIndex;   // 下次DMA数据写入到 ledPWMBuf 的 Index
+//  ledPWMSendIndex;  //  ledBuf中下一个写入到 ledPWMBuf 进行数据传输的 Index
+  ledPWMBufIndex = LED_PWM_HALF_LEN*3;
+  ledPWMSendIndex = 0;
+  // RESET 码
+  uint16_t i = 0;
+  for(i=0; i<LED_PWM_HALF_LEN*3; i++){
+    fillLedPwmReset(i);
+  }
+  APP_PWM_Fill_Half();
+  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_1, (uint32_t *)&ledPWMBuf[0], (uint16_t)(PWM_BUFF_LEN));
+}
+
+void APP_PWM_Fill_Half(void) {
+  uint16_t i = 0;
+  for(i=0; i<LED_PWM_HALF_LEN*3; i++){
+    if(ledPWMSendIndex >= ledLen){
+      break;
+    }
+    fillLedPwmBuff(ledPWMBufIndex+i, ledBuf[ledPWMSendIndex]);
+    ledPWMSendIndex ++;
+  }
+  while(i<LED_PWM_HALF_LEN*3){
+    fillLedPwmReset(i);
+    i++;
+  }
+  if(ledPWMBufIndex == 0){
+    ledPWMBufIndex = LED_PWM_HALF_LEN*3;
+  }
+  else{
+    ledPWMBufIndex = 0;
+  }
+}
+
+void APP_TIM_DMADelayPulseCplt(DMA_HandleTypeDef *hdma) {
+  APP_PWM_Fill_Half();
+  HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
 }
 
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
   if(htim->Instance==TIM2)
   {
-    HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
-    HAL_TIM_PWM_Stop_DMA(&htim2, TIM_CHANNEL_1);
+    if(ledPWMSendIndex >= ledLen){
+      HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
+      HAL_TIM_PWM_Stop_DMA(&htim2, TIM_CHANNEL_1);
+    }
+    else{
+      APP_PWM_Fill_Half();
+    }
   }
 }
 
